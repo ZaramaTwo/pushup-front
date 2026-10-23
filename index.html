@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>Contador de Flexões</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align: center; background: #111; color: #fff; }
+  #container { position: relative; display: inline-block; margin-top: 20px; width: 640px; height: 480px; }
+  video, canvas { position: absolute; top: 0; left: 0; }
+  #contador { font-size: 48px; margin-top: 10px; }
+  button { font-size: 18px; padding: 10px 20px; margin-top: 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<h1>Contador de Flexões</h1>
+<div id="container">
+  <video id="video" width="640" height="480" autoplay playsinline muted></video>
+  <canvas id="canvas" width="640" height="480"></canvas>
+</div>
+<div id="contador">Flexões: 0</div>
+<div id="debug" style="font-size: 14px; color: yellow; margin-top: 10px;"></div>
+<button id="btnFinalizar">Finalizar treino</button>
+
+<!-- Bibliotecas do TensorFlow.js e do modelo de pose -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+
+<script>
+const API_URL = "http://127.0.0.1:8000/treinos";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const contadorEl = document.getElementById("contador");
+const btnFinalizar = document.getElementById("btnFinalizar");
+
+let contagem = 0;
+let estadoFlexao = "cima";
+let detector;
+
+// Guarda o menor e maior valor de altura já vistos, pra calibrar automaticamente
+let yMinimo = Infinity;
+let yMaximo = -Infinity;
+
+async function iniciarCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  video.srcObject = stream;
+  return new Promise((resolve) => {
+    video.onloadedmetadata = () => resolve(video);
+  });
+}
+
+async function carregarModelo() {
+  detector = await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+  );
+}
+
+function desenharPontos(keypoints) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  keypoints.forEach((ponto) => {
+    if (ponto.score > 0.4) {
+      ctx.beginPath();
+      ctx.arc(ponto.x, ponto.y, 5, 0, 2 * Math.PI);
+      ctx.fillStyle = "lime";
+      ctx.fill();
+    }
+  });
+}
+
+async function detectar() {
+  const poses = await detector.estimatePoses(video);
+
+  let textoDebug = "Sem detecção suficiente";
+
+  if (poses.length > 0) {
+    const keypoints = poses[0].keypoints;
+    desenharPontos(keypoints);
+
+    const ombroEsq = keypoints.find(p => p.name === "left_shoulder");
+    const ombroDir = keypoints.find(p => p.name === "right_shoulder");
+
+    if (ombroEsq && ombroDir && ombroEsq.score > 0.3 && ombroDir.score > 0.3) {
+      // Média da altura dos dois ombros
+      const yAtual = (ombroEsq.y + ombroDir.y) / 2;
+
+      // Atualiza o menor/maior valor já visto (calibração automática)
+      if (yAtual < yMinimo) yMinimo = yAtual;
+      if (yAtual > yMaximo) yMaximo = yAtual;
+
+      const amplitude = yMaximo - yMinimo;
+
+      // Só conta se já tiver uma amplitude mínima de movimento detectada
+      if (amplitude > 40) {
+        const limiteBaixo = yMinimo + amplitude * 0.3; // perto do topo
+        const limiteAlto = yMinimo + amplitude * 0.7;  // perto do fundo
+
+        if (yAtual > limiteAlto && estadoFlexao === "cima") {
+          estadoFlexao = "baixo";
+        }
+        if (yAtual < limiteBaixo && estadoFlexao === "baixo") {
+          estadoFlexao = "cima";
+          contagem++;
+          contadorEl.textContent = `Flexões: ${contagem}`;
+        }
+      }
+
+      textoDebug = `Y atual: ${yAtual.toFixed(0)} | Min: ${yMinimo.toFixed(0)} | Max: ${yMaximo.toFixed(0)} | Amplitude: ${amplitude.toFixed(0)} | Estado: ${estadoFlexao}`;
+    }
+  }
+
+  document.getElementById("debug").textContent = textoDebug;
+  requestAnimationFrame(detectar);
+}
+
+async function salvarTreino(quantidade) {
+  try {
+    const resposta = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quantidade })
+    });
+    const dados = await resposta.json();
+    alert(`Treino salvo! Total: ${dados.quantidade} flexões`);
+  } catch (erro) {
+    alert("Erro ao salvar treino. A API está rodando?");
+    console.error(erro);
+  }
+}
+
+btnFinalizar.addEventListener("click", () => {
+  salvarTreino(contagem);
+});
+
+async function iniciar() {
+  await iniciarCamera();
+  await carregarModelo();
+  detectar();
+}
+
+iniciar();
+</script>
+
+</body>
+</html>
